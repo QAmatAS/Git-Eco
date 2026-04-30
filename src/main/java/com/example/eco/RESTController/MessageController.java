@@ -9,7 +9,7 @@ import org.springframework.web.client.RestTemplate;
 import java.util.Map;
 
 @RestController
-@RequestMapping("/api")
+@RequestMapping("/api/v1/messages")
 public class MessageController {
 
     @Autowired
@@ -18,56 +18,58 @@ public class MessageController {
     @Autowired
     private RestTemplate restTemplate;
 
-    // URL Service Auth untuk verifikasi token (Node.js Service)
     private final String AUTH_URL = "http://localhost:3000/auth/verify-token";
 
-    @PostMapping("/publish")
+    @PostMapping
     public ResponseEntity<?> publishMessage(
             @RequestHeader(value = "Authorization", required = false) String token,
             @RequestBody String jsonBody) {
 
-        // 1. Validasi keberadaan token di Header Authorization
         if (token == null || token.isEmpty()) {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                    .body(Map.of("message", "Token diperlukan."));
+                    .body(Map.of(
+                            "status", "error",
+                            "message", "Authorization token is required."
+                    ));
         }
 
         try {
-            // 2. Siapkan Header untuk memanggil API verifikasi di Node.js
             HttpHeaders headers = new HttpHeaders();
             headers.set("Authorization", token);
             headers.setContentType(MediaType.APPLICATION_JSON);
             HttpEntity<String> entity = new HttpEntity<>(headers);
 
-            // 3. Panggil API External (Auth Service)
             ResponseEntity<Map> response = restTemplate.exchange(AUTH_URL, HttpMethod.POST, entity, Map.class);
 
-            // 4. Cek respons dari Auth Service
             if (response.getStatusCode() == HttpStatus.OK && response.getBody() != null) {
                 String authMessage = (String) response.getBody().get("message");
 
                 if ("JWT Valid".equals(authMessage)) {
-                    // 5. Kirim pesan ke RabbitMQ (CloudAMQP) melalui MessagePublisher
                     messagePublisher.sendMessage(jsonBody);
 
-                    return ResponseEntity.ok(Map.of(
-                            "status", "success",
-                            "message", "Pesan berhasil dikirim ke 2 channel CloudAMQP",
-                            "verifiedUser", response.getBody().get("user")
-                    ));
+                    return ResponseEntity.status(HttpStatus.CREATED)
+                            .body(Map.of(
+                                    "status", "success",
+                                    "message", "Message successfully published to 2 Kafka topics.",
+                                    "verifiedUser", response.getBody().get("user")
+                            ));
                 }
             }
 
         } catch (HttpClientErrorException e) {
-            // Menangkap pesan error spesifik: "Token tidak valid atau sudah kadaluwarsa."
             return ResponseEntity.status(e.getStatusCode()).body(e.getResponseBodyAs(Map.class));
         } catch (Exception e) {
-            // Menangkap error jika Auth Service (Node.js) sedang down
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(Map.of("message", "Auth Service Error: " + e.getMessage()));
+                    .body(Map.of(
+                            "status", "error",
+                            "message", "Auth service unavailable: " + e.getMessage()
+                    ));
         }
 
         return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                .body(Map.of("message", "Token tidak valid."));
+                .body(Map.of(
+                        "status", "error",
+                        "message", "Invalid or expired token."
+                ));
     }
 }
